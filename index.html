@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Text Template Composer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📝</text></svg>">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root{ padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+  html{scroll-padding-top:env(safe-area-inset-top,0px)}
+  body{background:#f8fafc}
+  @media (prefers-color-scheme: dark){ body{background:#0b0f17} }
+  .card{transition:box-shadow .15s ease, transform .15s ease}
+  .fade{animation:fade .2s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(2px)}to{opacity:1;transform:none}}
+  .ph-hl{background:rgba(99,102,241,.15); border-radius:4px; padding:0 2px; cursor:pointer; transition:background .15s}
+  .ph-hl.empty{background:rgba(239,68,68,.12); color:#dc2626; font-style:italic}
+  .ph-hl.active{background:rgba(99,102,241,.4)}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:8px}
+  @media (prefers-color-scheme: dark){::-webkit-scrollbar-thumb{background:#334155}}
+</style>
+</head>
+<body class="min-h-screen text-slate-900 dark:text-slate-100">
+<div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50"></div>
+<div id="app" class="max-w-6xl mx-auto px-4 sm:px-6 pb-16"></div>
+
+<script>
+const STORE_KEY = 'text-template-composer:templates';
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+
+// ---------- storage ----------
+const Storage = {
+  getTemplates(){ try{ return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }catch(e){ return []; } },
+  save(list){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(list)); return true; }catch(e){ return false; } },
+  create(t){ const list=this.getTemplates(); const now=new Date().toISOString();
+    const tpl={ id:uid(), name:t.name, description:t.description||'', content:t.content,
+      category:t.category||'', tags:t.tags||[], favorite:false, createdAt:now, updatedAt:now };
+    list.push(tpl); this.save(list); return tpl; },
+  update(id, data){ const list=this.getTemplates(); const i=list.findIndex(x=>x.id===id); if(i<0) return null;
+    list[i]={...list[i], ...data, updatedAt:new Date().toISOString()}; this.save(list); return list[i]; },
+  delete(id){ this.save(this.getTemplates().filter(x=>x.id!==id)); },
+  get(id){ return this.getTemplates().find(x=>x.id===id); },
+  replaceAll(list){ this.save(list); }
+};
+
+// ---------- core logic ----------
+function parsePlaceholders(content){
+  const seen = new Set(); const out = [];
+  const re = /\{\{\s*([^}]+?)\s*\}\}/g; let m;
+  while((m = re.exec(content||''))){ const key = m[1]; if(!seen.has(key)){ seen.add(key); out.push(key); } }
+  return out;
+}
+function composeTemplate(content, values){
+  return (content||'').replace(/\{\{\s*([^}]+?)\s*\}\}/g, (full, key) => {
+    const v = values[key]; return (v !== undefined && v !== '') ? v : full;
+  });
+}
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function slugify(s){ return (s||'template').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'template'; }
+function timeAgo(iso){
+  const d = (Date.now()-new Date(iso).getTime())/1000;
+  if(d<60) return 'just now';
+  if(d<3600) return Math.floor(d/60)+'m ago';
+  if(d<86400) return Math.floor(d/3600)+'h ago';
+  return Math.floor(d/86400)+'d ago';
+}
+
+// ---------- toast ----------
+function toast(msg){
+  const el = document.createElement('div');
+  el.className = 'fade mb-2 px-4 py-2 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-sm shadow-lg';
+  el.textContent = msg;
+  document.getElementById('toast').appendChild(el);
+  setTimeout(()=>el.remove(), 1800);
+}
+
+// ---------- router ----------
+window.addEventListener('hashchange', render);
+window.addEventListener('DOMContentLoaded', render);
+
+function nav(hash){ location.hash = hash; }
+
+function route(){
+  const h = location.hash.replace(/^#\/?/, '');
+  const parts = h.split('/').filter(Boolean);
+  if(parts.length===0) return {view:'home'};
+  if(parts[0]==='templates' && parts[1]==='new') return {view:'editor'};
+  if(parts[0]==='templates' && parts[2]==='edit') return {view:'editor', id:parts[1]};
+  if(parts[0]==='templates') return {view:'templates'};
+  if(parts[0]==='compose' && parts[1]) return {view:'compose', id:parts[1]};
+  return {view:'home'};
+}
+
+function render(){
+  const r = route();
+  const app = document.getElementById('app');
+  app.innerHTML = Shell(inner(r));
+  wireShell();
+  if(r.view==='home') return;
+  if(r.view==='templates') return wireTemplates();
+  if(r.view==='editor') return wireEditor(r.id);
+  if(r.view==='compose') return wireCompose(r.id);
+}
+function inner(r){
+  if(r.view==='home') return Home();
+  if(r.view==='templates') return TemplatesPage();
+  if(r.view==='editor') return EditorPage(r.id);
+  if(r.view==='compose') return ComposePage(r.id);
+  return Home();
+}
+
+// ---------- shell ----------
+function Shell(content){
+  return `
+  <header class="flex items-center justify-between py-6">
+    <a href="#/" class="flex items-center gap-2 font-semibold text-lg">
+      <span>📝</span><span>Text Template Composer</span>
+    </a>
+    <nav class="flex gap-1 text-sm">
+      <a href="#/templates" class="px-3 py-1.5 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800">Templates</a>
+      <button id="export-btn" class="px-3 py-1.5 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800">Export</button>
+      <button id="import-btn" class="px-3 py-1.5 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800">Import</button>
+      <input id="import-file" type="file" accept="application/json" class="hidden">
+    </nav>
+  </header>
+  <main class="fade">${content}</main>
+  `;
+}
+function wireShell(){
+  document.getElementById('export-btn').onclick = doExport;
+  document.getElementById('import-btn').onclick = () => document.getElementById('import-file').click();
+  document.getElementById('import-file').onchange = doImport;
+}
+function doExport(){
+  const data = { version:1, exportedAt:new Date().toISOString(), templates: Storage.getTemplates() };
+  const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `text-template-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  toast('Exported templates');
+}
+function doImport(e){
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const data = JSON.parse(reader.result);
+      if(!data || !Array.isArray(data.templates)) throw new Error('bad shape');
+      const list = Storage.getTemplates();
+      let count = 0;
+      data.templates.forEach(t => {
+        if(!t.name || !t.content) return;
+        list.push({ id:uid(), name:t.name, description:t.description||'', content:t.content,
+          category:t.category||'', tags:t.tags||[], favorite:false,
+          createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
+        count++;
+      });
+      Storage.replaceAll(list);
+      toast(`Imported ${count} template(s) as new`);
+      render();
+    }catch(err){ toast('Unable to import: invalid JSON format'); }
+    e.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ---------- home ----------
+function Home(){
+  const n = Storage.getTemplates().length;
+  return `
+  <div class="grid sm:grid-cols-2 gap-5 mt-4">
+    <a href="#/templates/new" class="card block p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:shadow-lg">
+      <div class="text-2xl mb-2">➕</div>
+      <h2 class="font-semibold text-lg mb-1">Create Template</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400">Create a reusable text template with dynamic placeholders.</p>
+      <span class="inline-block mt-4 text-sm font-medium text-indigo-600 dark:text-indigo-400">Create Template →</span>
+    </a>
+    <a href="#/templates" class="card block p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:shadow-lg">
+      <div class="text-2xl mb-2">🧩</div>
+      <h2 class="font-semibold text-lg mb-1">Compose Text</h2>
+      <p class="text-sm text-slate-500 dark:text-slate-400">Choose an existing template and fill in its placeholders.</p>
+      <span class="inline-block mt-4 text-sm font-medium text-indigo-600 dark:text-indigo-400">Compose Text →</span>
+    </a>
+  </div>
+  <p class="text-sm text-slate-500 dark:text-slate-400 mt-6">${n} template${n===1?'':'s'} saved locally on this device.</p>
+  `;
+}
+
+// ---------- templates list ----------
+let tplFilter = { q:'', sort:'updated' };
+function TemplatesPage(){
+  let list = Storage.getTemplates();
+  const q = tplFilter.q.toLowerCase();
+  if(q) list = list.filter(t => [t.name,t.description,t.category,...(t.tags||[])].join(' ').toLowerCase().includes(q));
+  if(tplFilter.sort==='updated') list.sort((a,b)=> new Date(b.updatedAt)-new Date(a.updatedAt));
+  if(tplFilter.sort==='created') list.sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
+  if(tplFilter.sort==='az') list.sort((a,b)=> a.name.localeCompare(b.name));
+  if(tplFilter.sort==='za') list.sort((a,b)=> b.name.localeCompare(a.name));
+  list.sort((a,b)=> (b.favorite?1:0)-(a.favorite?1:0));
+
+  const cards = list.map(t => {
+    const n = parsePlaceholders(t.content).length;
+    return `
+    <div class="card p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <h3 class="font-semibold">${escapeHtml(t.name)}</h3>
+          <p class="text-sm text-slate-500 dark:text-slate-400">${escapeHtml(t.description||'')}</p>
+        </div>
+        <button data-fav="${t.id}" class="text-lg">${t.favorite?'⭐':'☆'}</button>
+      </div>
+      <p class="text-xs text-slate-400 mt-2">${n} placeholder${n===1?'':'s'} · Updated ${timeAgo(t.updatedAt)}</p>
+      <div class="flex flex-wrap gap-2 mt-3 text-sm">
+        <a href="#/compose/${t.id}" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">Compose</a>
+        <a href="#/templates/${t.id}/edit" class="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Edit</a>
+        <button data-dup="${t.id}" class="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Duplicate</button>
+        <button data-del="${t.id}" class="px-3 py-1.5 rounded-lg border border-red-300 text-red-600 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  const empty = Storage.getTemplates().length===0 ? `
+    <div class="text-center py-16">
+      <p class="text-lg font-medium mb-1">No templates yet.</p>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">Create your first reusable template and start composing text faster.</p>
+      <a href="#/templates/new" class="px-4 py-2 rounded-lg bg-indigo-600 text-white">Create Template</a>
+    </div>` : (list.length===0 ? `
+    <div class="text-center py-16">
+      <p class="text-lg font-medium mb-1">No templates found.</p>
+      <p class="text-sm text-slate-500 dark:text-slate-400">Try another search term or create a new template.</p>
+    </div>` : '');
+
+  return `
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+    <h1 class="text-xl font-semibold">Templates</h1>
+    <a href="#/templates/new" class="px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm">+ New Template</a>
+  </div>
+  <div class="flex flex-col sm:flex-row gap-2 mb-4">
+    <input id="tpl-search" type="text" placeholder="Search templates…" value="${escapeHtml(tplFilter.q)}"
+      class="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">
+    <select id="tpl-sort" class="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">
+      <option value="updated" ${tplFilter.sort==='updated'?'selected':''}>Recently updated</option>
+      <option value="created" ${tplFilter.sort==='created'?'selected':''}>Recently created</option>
+      <option value="az" ${tplFilter.sort==='az'?'selected':''}>Name A–Z</option>
+      <option value="za" ${tplFilter.sort==='za'?'selected':''}>Name Z–A</option>
+    </select>
+  </div>
+  ${empty || `<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">${cards}</div>`}
+  `;
+}
+function wireTemplates(){
+  const s = document.getElementById('tpl-search');
+  const so = document.getElementById('tpl-sort');
+  if(s) s.oninput = e => { tplFilter.q = e.target.value; renderPartial(); };
+  if(so) so.onchange = e => { tplFilter.sort = e.target.value; renderPartial(); };
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const t = Storage.get(b.dataset.del);
+    if(confirm(`Delete "${t.name}"?`)){ Storage.delete(b.dataset.del); toast('Template deleted'); renderPartial(); }
+  });
+  document.querySelectorAll('[data-dup]').forEach(b => b.onclick = () => {
+    const t = Storage.get(b.dataset.dup);
+    Storage.create({ name:t.name+' (copy)', description:t.description, content:t.content, category:t.category, tags:t.tags });
+    toast('Template duplicated'); renderPartial();
+  });
+  document.querySelectorAll('[data-fav]').forEach(b => b.onclick = () => {
+    const t = Storage.get(b.dataset.fav);
+    Storage.update(t.id, { favorite: !t.favorite }); renderPartial();
+  });
+  function renderPartial(){ document.querySelector('main').innerHTML = TemplatesPage(); wireTemplates(); }
+}
+
+// ---------- editor ----------
+function EditorPage(id){
+  const t = id ? Storage.get(id) : null;
+  return `
+  <a href="#/templates" class="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">← Back to Templates</a>
+  <h1 class="text-xl font-semibold mt-2 mb-4">${t? 'Edit Template' : 'Create Template'}</h1>
+  <div class="grid gap-4 max-w-3xl">
+    <div>
+      <label class="block text-sm font-medium mb-1">Template Name</label>
+      <input id="f-name" value="${escapeHtml(t?.name||'')}" placeholder="Job Application Email"
+        class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Description</label>
+      <input id="f-desc" value="${escapeHtml(t?.description||'')}" placeholder="Short description"
+        class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Category</label>
+      <input id="f-cat" value="${escapeHtml(t?.category||'')}" placeholder="Email"
+        class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1" for="f-content">Template Content</label>
+      <textarea id="f-content" rows="10" placeholder="Dear {{NAME}}, ..."
+        class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-sm">${escapeHtml(t?.content||'')}</textarea>
+      <div class="flex justify-between text-xs text-slate-400 mt-1">
+        <span id="f-counts"></span>
+        <span id="f-error" class="text-red-500"></span>
+      </div>
+    </div>
+    <div>
+      <p class="text-sm font-medium mb-1">Detected Placeholders</p>
+      <div id="f-placeholders" class="flex flex-wrap gap-2"></div>
+    </div>
+    <div class="flex gap-2">
+      <button id="f-save" class="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm">Save Template</button>
+      <a href="#/templates" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm">Cancel</a>
+    </div>
+  </div>
+  `;
+}
+function wireEditor(id){
+  const content = document.getElementById('f-content');
+  const counts = document.getElementById('f-counts');
+  const phWrap = document.getElementById('f-placeholders');
+  function update(){
+    const val = content.value;
+    const lines = val.split('\n').length;
+    counts.textContent = `${val.length} chars · ${lines} line${lines===1?'':'s'}`;
+    const phs = parsePlaceholders(val);
+    phWrap.innerHTML = phs.length ? phs.map(k=>`<span class="px-2 py-1 rounded-md bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 text-xs font-mono">${escapeHtml(k)}</span>`).join('') :
+      `<span class="text-xs text-slate-400">None detected yet</span>`;
+  }
+  content.oninput = update; update();
+  document.getElementById('f-save').onclick = () => {
+    const name = document.getElementById('f-name').value.trim();
+    const err = document.getElementById('f-error');
+    if(!name){ err.textContent = 'Template name is required.'; return; }
+    if(!content.value.trim()){ err.textContent = 'Template content cannot be empty.'; return; }
+    err.textContent = '';
+    const data = { name, description: document.getElementById('f-desc').value.trim(),
+      category: document.getElementById('f-cat').value.trim(), content: content.value };
+    let saved;
+    if(id) saved = Storage.update(id, data); else saved = Storage.create(data);
+    toast('Template saved');
+    nav(`#/compose/${saved.id}`);
+  };
+}
+
+// ---------- compose ----------
+let composeValues = {};
+function ComposePage(id){
+  const t = Storage.get(id);
+  if(!t) return `<p class="mt-6">Template not found. <a class="text-indigo-600" href="#/templates">Back to templates</a></p>`;
+  const phs = parsePlaceholders(t.content);
+  if(Object.keys(composeValues).length===0 || composeValues.__id!==id){ composeValues = { __id:id }; phs.forEach(k=>composeValues[k]=''); }
+  const inputs = phs.map(k => `
+    <div>
+      <label class="block text-xs font-mono font-medium mb-1 text-slate-500 dark:text-slate-400">${escapeHtml(k)}</label>
+      <textarea data-key="${escapeHtml(k)}" rows="2" class="ph-input w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">${escapeHtml(composeValues[k]||'')}</textarea>
+    </div>`).join('') || `<p class="text-sm text-slate-400">This template has no placeholders.</p>`;
+
+  return `
+  <a href="#/templates" class="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">← Back to Templates</a>
+  <div class="flex items-center justify-between mt-2 mb-4 flex-wrap gap-2">
+    <h1 class="text-xl font-semibold">${escapeHtml(t.name)}</h1>
+    <a href="#/templates/${t.id}/edit" class="text-sm px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700">Edit Template</a>
+  </div>
+  <div class="grid lg:grid-cols-2 gap-6">
+    <div>
+      <p class="text-sm font-semibold mb-2">Fill in the following fields</p>
+      <div class="space-y-3 max-h-[60vh] overflow-y-auto pr-1" id="ph-inputs">${inputs}</div>
+    </div>
+    <div>
+      <p class="text-sm font-semibold mb-2">Preview</p>
+      <div id="ph-preview" class="whitespace-pre-wrap text-sm p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 max-h-[60vh] overflow-y-auto leading-relaxed"></div>
+      <div class="flex gap-2 mt-3">
+        <button id="btn-copy" class="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm">Copy Text</button>
+        <button id="btn-download" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm">Download .txt</button>
+      </div>
+    </div>
+  </div>
+  `;
+}
+function wireCompose(id){
+  const t = Storage.get(id); if(!t) return;
+  const preview = document.getElementById('ph-preview');
+  function renderPreview(){
+    let html = escapeHtml(t.content).replace(/\{\{\s*([^}]+?)\s*\}\}/g, (full, key) => {
+      const v = composeValues[key];
+      if(v){ return `<span class="ph-hl" data-key="${escapeHtml(key)}">${escapeHtml(v)}</span>`; }
+      return `<span class="ph-hl empty" data-key="${escapeHtml(key)}">[ Enter ${escapeHtml(key)} ]</span>`;
+    });
+    preview.innerHTML = html;
+    preview.querySelectorAll('.ph-hl').forEach(el => el.onclick = () => {
+      const input = document.querySelector(`.ph-input[data-key="${el.dataset.key}"]`);
+      if(input){ input.scrollIntoView({block:'center', behavior:'smooth'}); input.focus(); }
+    });
+  }
+  renderPreview();
+  document.querySelectorAll('.ph-input').forEach(inp => {
+    inp.oninput = () => { composeValues[inp.dataset.key] = inp.value; renderPreview(); };
+    inp.onfocus = () => {
+      preview.querySelectorAll('.ph-hl').forEach(e=>e.classList.remove('active'));
+      const target = preview.querySelector(`.ph-hl[data-key="${inp.dataset.key}"]`);
+      if(target){ target.classList.add('active'); target.scrollIntoView({block:'center', behavior:'smooth'}); }
+    };
+    inp.onblur = () => preview.querySelectorAll('.ph-hl').forEach(e=>e.classList.remove('active'));
+  });
+  document.getElementById('btn-copy').onclick = async () => {
+    const text = composeTemplate(t.content, composeValues);
+    try{ await navigator.clipboard.writeText(text); toast('Copied!'); }
+    catch(e){ toast('Unable to access the clipboard. Please copy manually.'); }
+  };
+  document.getElementById('btn-download').onclick = () => {
+    const text = composeTemplate(t.content, composeValues);
+    const blob = new Blob([text], {type:'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${slugify(t.name)}.txt`;
+    a.click();
+    toast('Downloaded');
+  };
+}
+</script>
+</body>
+</html>
