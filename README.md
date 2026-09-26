@@ -1,1 +1,1 @@
-# text-composer
+# text-template-composer
