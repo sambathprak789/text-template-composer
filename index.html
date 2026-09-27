@@ -45,6 +45,20 @@ const Storage = {
   replaceAll(list){ this.save(list); }
 };
 
+const DRAFT_KEY = 'text-template-composer:drafts';
+const DraftStorage = {
+  getAll(){ try{ return JSON.parse(localStorage.getItem(DRAFT_KEY) || '[]'); }catch(e){ return []; } },
+  forTemplate(templateId){ return this.getAll().filter(d=>d.templateId===templateId).sort((a,b)=> new Date(b.savedAt)-new Date(a.savedAt)); },
+  save(list){ try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(list)); return true; }catch(e){ return false; } },
+  create(templateId, templateName, values, label){
+    const list = this.getAll();
+    const d = { id:uid(), templateId, templateName, values, label: label||'', savedAt:new Date().toISOString() };
+    list.push(d); this.save(list); return d;
+  },
+  delete(id){ this.save(this.getAll().filter(d=>d.id!==id)); },
+  get(id){ return this.getAll().find(d=>d.id===id); }
+};
+
 // ---------- core logic ----------
 function parsePlaceholders(content){
   const seen = new Set(); const out = [];
@@ -369,12 +383,33 @@ function ComposePage(id){
     <div>
       <p class="text-sm font-semibold mb-2">Preview</p>
       <div id="ph-preview" class="whitespace-pre-wrap text-sm p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 max-h-[60vh] overflow-y-auto leading-relaxed"></div>
-      <div class="flex gap-2 mt-3">
+      <div class="flex gap-2 mt-3 flex-wrap">
         <button id="btn-copy" class="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm">Copy Text</button>
         <button id="btn-download" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm">Download .txt</button>
+        <button id="btn-save-draft" class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm">💾 Save Progress</button>
       </div>
     </div>
   </div>
+  <div class="mt-8" id="draft-section">${DraftListHTML(t.id)}</div>
+  `;
+}
+function DraftListHTML(templateId){
+  const drafts = DraftStorage.forTemplate(templateId);
+  if(drafts.length===0) return '';
+  const rows = drafts.map(d => `
+    <div class="flex items-center justify-between gap-2 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <div class="min-w-0">
+        <p class="text-sm font-medium truncate">${escapeHtml(d.label) || 'Untitled draft'}</p>
+        <p class="text-xs text-slate-400">Saved ${timeAgo(d.savedAt)}</p>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        <button data-resume="${d.id}" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs">Resume</button>
+        <button data-del-draft="${d.id}" class="px-3 py-1.5 rounded-lg border border-red-300 text-red-600 dark:border-red-800 text-xs">Delete</button>
+      </div>
+    </div>`).join('');
+  return `
+  <p class="text-sm font-semibold mb-2">Saved Drafts</p>
+  <div class="space-y-2">${rows}</div>
   `;
 }
 function wireCompose(id){
@@ -416,6 +451,30 @@ function wireCompose(id){
     a.click();
     toast('Downloaded');
   };
+  document.getElementById('btn-save-draft').onclick = () => {
+    const label = prompt('Name this draft (optional):', '') || '';
+    const { __id, ...values } = composeValues;
+    DraftStorage.create(t.id, t.name, values, label.trim());
+    toast('Progress saved');
+    refreshDrafts();
+  };
+  wireDraftActions();
+  function refreshDrafts(){
+    document.getElementById('draft-section').innerHTML = DraftListHTML(t.id);
+    wireDraftActions();
+  }
+  function wireDraftActions(){
+    document.querySelectorAll('[data-resume]').forEach(b => b.onclick = () => {
+      const d = DraftStorage.get(b.dataset.resume); if(!d) return;
+      composeValues = { __id: t.id, ...d.values };
+      document.querySelectorAll('.ph-input').forEach(inp => { inp.value = composeValues[inp.dataset.key] || ''; });
+      renderPreview();
+      toast('Draft resumed');
+    });
+    document.querySelectorAll('[data-del-draft]').forEach(b => b.onclick = () => {
+      if(confirm('Delete this saved draft?')){ DraftStorage.delete(b.dataset.delDraft); refreshDrafts(); toast('Draft deleted'); }
+    });
+  }
 }
 </script>
 </body>
